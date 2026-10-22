@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/phaladamou/noduolink/api/proto"
 	"github.com/phaladamou/noduolink/internal/config"
 	"github.com/phaladamou/noduolink/internal/identity"
+	"github.com/phaladamou/noduolink/internal/tunnel"
 )
 
 func main() {
@@ -19,6 +21,14 @@ func main() {
 	nodeIDFlag := flag.String("id", "device-test-01", "ID de l'appareil (pour l'affichage)")
 	connectTo := flag.String("connect-to", "", "NodeID de la passerelle à laquelle se connecter")
 	acceptConnections := flag.Bool("accept", true, "Accepter automatiquement les demandes de connexion")
+
+	// Flags pour WireGuard
+	wgPrivateKey := flag.String("wg-private", "", "Clé privée WireGuard (base64)")
+	wgPeerPublicKey := flag.String("wg-peer", "", "Clé publique WireGuard du pair (base64)")
+	wgLocalIP := flag.String("wg-ip", "10.0.0.2/24", "Adresse IP locale du tunnel")
+	wgPeerIP := flag.String("wg-peer-ip", "10.0.0.1/32", "Adresse IP du pair dans le tunnel")
+	wgEndpoint := flag.String("wg-endpoint", "", "Adresse IP:port du pair (optionnel)")
+
 	flag.Parse()
 
 	log.SetPrefix(fmt.Sprintf("[noduolink-%s] ", *nodeIDFlag))
@@ -29,7 +39,7 @@ func main() {
 		log.Fatalf("Erreur critique de configuration: %v", err)
 	}
 
-	// 1. Gestion de l'identité (Chargement réel)
+	// 1. Gestion de l'identité
 	keyPath := cfg.Identity.PrivateKeyPath
 	var kp *identity.KeyPair
 
@@ -97,6 +107,18 @@ func main() {
 	fmt.Println("  Statut : Connecté (en attente...)")
 	fmt.Println("--------------------------------------------------")
 
+	// Fonction utilitaire pour configurer l'interface réseau locale
+	setupLocalInterface := func(ip string) {
+		// Ajouter l'adresse IP
+		cmd := exec.Command("sudo", "ip", "addr", "add", ip, "dev", "wg0")
+		if err := cmd.Run(); err != nil {
+			log.Printf("Note: impossible d'ajouter l'IP (peut-être déjà présente): %v", err)
+		}
+		// Activer l'interface
+		exec.Command("sudo", "ip", "link", "set", "wg0", "up").Run()
+		log.Printf("Interface wg0 configurée avec l'IP %s", ip)
+	}
+
 	// 6. Boucle de lecture
 	for {
 		var incoming proto.Message
@@ -120,6 +142,24 @@ func main() {
 				}}
 				conn.WriteJSON(accept)
 				log.Println("Connexion acceptée.")
+
+				// Configurer le tunnel WireGuard en tant que passerelle
+				if *wgPrivateKey != "" && *wgPeerPublicKey != "" {
+					log.Println("Configuration du tunnel WireGuard (mode Passerelle)...")
+					tunnelCfg := tunnel.Config{
+						InterfaceName: "wg0",
+						PrivateKey:    *wgPrivateKey,
+						ListenPort:    51820,
+						PeerPublicKey: *wgPeerPublicKey,
+						PeerEndpoint:  *wgEndpoint,
+						AllowedIPs:    []string{*wgPeerIP},
+					}
+					if err := tunnel.SetupTunnel(tunnelCfg); err != nil {
+						log.Printf("Erreur de configuration du tunnel: %v", err)
+					} else {
+						setupLocalInterface(*wgLocalIP)
+					}
+				}
 			} else {
 				reject := proto.Message{Type: proto.TypeConnectReject, Data: proto.ConnectResponse{
 					TargetNodeID: initiatorID,
@@ -132,6 +172,24 @@ func main() {
 
 		case proto.TypeConnectAccept:
 			log.Println("--- CONNEXION ACCEPTÉE PAR LE PAIR ---")
+
+			// Configurer le tunnel WireGuard en tant que client
+			if *wgPrivateKey != "" && *wgPeerPublicKey != "" {
+				log.Println("Configuration du tunnel WireGuard (mode Client)...")
+				tunnelCfg := tunnel.Config{
+					InterfaceName: "wg0",
+					PrivateKey:    *wgPrivateKey,
+					ListenPort:    51820,
+					PeerPublicKey: *wgPeerPublicKey,
+					PeerEndpoint:  *wgEndpoint,
+					AllowedIPs:    []string{*wgPeerIP},
+				}
+				if err := tunnel.SetupTunnel(tunnelCfg); err != nil {
+					log.Printf("Erreur de configuration du tunnel: %v", err)
+				} else {
+					setupLocalInterface(*wgLocalIP)
+				}
+			}
 
 		case proto.TypeConnectReject:
 			log.Println("--- CONNEXION REFUSÉE ---")
