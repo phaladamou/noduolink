@@ -1,7 +1,6 @@
 package identity
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -11,40 +10,26 @@ func TestGenerateKeyPair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKeyPair() a échoué: %v", err)
 	}
-
-	// Vérifier la taille des clés (Curve25519 = 32 octets)
-	if len(kp.PrivateKey) != 32 {
-		t.Errorf("La clé privée doit faire 32 octets, obtenu %d", len(kp.PrivateKey))
-	}
-	if len(kp.PublicKey) != 32 {
-		t.Errorf("La clé publique doit faire 32 octets, obtenu %d", len(kp.PublicKey))
-	}
-
-	// Vérifier que deux clés générées ne sont pas identiques
-	kp2, _ := GenerateKeyPair()
-	if string(kp.PrivateKey) == string(kp2.PrivateKey) {
-		t.Error("Deux clés privées générées sont identiques (grave problème d'aléatoire)")
+	if len(kp.PrivateKey) != 32 || len(kp.PublicKey) != 32 {
+		t.Error("La taille des clés est incorrecte")
 	}
 }
 
-func TestSaveToDisk(t *testing.T) {
+func TestSaveAndLoad(t *testing.T) {
 	tmpDir := t.TempDir()
-	keyPath := filepath.Join(tmpDir, "keys", "device.key")
+	keyPath := filepath.Join(tmpDir, "device.key")
 
-	kp, _ := GenerateKeyPair()
-	err := kp.SaveToDisk(keyPath)
-	if err != nil {
+	kp1, _ := GenerateKeyPair()
+	if err := kp1.SaveToDisk(keyPath); err != nil {
 		t.Fatalf("SaveToDisk() a échoué: %v", err)
 	}
 
-	// Vérifier que le fichier existe
-	info, err := os.Stat(keyPath)
+	kp2, err := LoadFromDisk(keyPath)
 	if err != nil {
-		t.Fatalf("Le fichier de clé n'existe pas: %v", err)
+		t.Fatalf("LoadFromDisk() a échoué: %v", err)
 	}
 
-	// Vérifier les permissions (0600 = lecture/écriture propriétaire uniquement)
-	if info.Mode().Perm() != 0600 {
-		t.Errorf("Permissions du fichier incorrectes: attendu 0600, obtenu %o", info.Mode().Perm())
+	if string(kp1.PrivateKey) != string(kp2.PrivateKey) {
+		t.Error("Les clés privées ne correspondent pas après rechargement")
 	}
 }

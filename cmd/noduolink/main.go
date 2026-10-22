@@ -16,10 +16,12 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Chemin vers le fichier de configuration")
-	nodeID := flag.String("id", "device-test-01", "ID de l'appareil (pour simuler plusieurs machines)")
+	nodeIDFlag := flag.String("id", "device-test-01", "ID de l'appareil (pour l'affichage)")
+	connectTo := flag.String("connect-to", "", "NodeID de la passerelle à laquelle se connecter")
+	acceptConnections := flag.Bool("accept", true, "Accepter automatiquement les demandes de connexion")
 	flag.Parse()
 
-	log.SetPrefix(fmt.Sprintf("[noduolink-%s] ", *nodeID))
+	log.SetPrefix(fmt.Sprintf("[noduolink-%s] ", *nodeIDFlag))
 	log.Println("Démarrage du Client NoduoLink...")
 
 	cfg, err := config.Load(*configPath)
@@ -27,7 +29,7 @@ func main() {
 		log.Fatalf("Erreur critique de configuration: %v", err)
 	}
 
-	// 1. Gestion de l'identité
+	// 1. Gestion de l'identité (Chargement réel)
 	keyPath := cfg.Identity.PrivateKeyPath
 	var kp *identity.KeyPair
 
@@ -41,69 +43,100 @@ func main() {
 			log.Fatalf("Impossible de sauvegarder les clés: %v", err)
 		}
 	} else {
-		log.Printf("Identité chargée depuis: %s", keyPath)
-		kp, _ = identity.GenerateKeyPair() // Note: on régénère pour l'instant
+		kp, err = identity.LoadFromDisk(keyPath)
+		if err != nil {
+			log.Fatalf("Impossible de charger les clés: %v", err)
+		}
+		log.Println("Identité chargée depuis le disque.")
 	}
 
 	pubKeyBase64 := base64.StdEncoding.EncodeToString(kp.PublicKey)
+	localNodeID := identity.GenerateLocalNodeID(pubKeyBase64)
 
 	fmt.Println("--------------------------------------------------")
-	fmt.Printf("  NoduoLink Client - %s\n", *nodeID)
+	fmt.Printf("  NoduoLink Client - %s\n", *nodeIDFlag)
 	fmt.Println("--------------------------------------------------")
 
 	// 2. Connexion au Coordinateur
 	serverURL := "ws://localhost:8080/ws"
-	log.Printf("Tentative de connexion au coordinateur sur %s...", serverURL)
+	log.Printf("Tentative de connexion au coordinateur...")
 
 	conn, _, err := websocket.DefaultDialer.Dial(serverURL, nil)
 	if err != nil {
-		log.Fatalf("Impossible de se connecter au coordinateur: %v", err)
+		log.Fatalf("Impossible de se connecter: %v", err)
 	}
 	defer conn.Close()
-	log.Println("Connecté au coordinateur !")
 
-	// 3. Envoyer le message REGISTER
-	regReq := proto.RegisterRequest{
-		NodeID:    *nodeID,
-		PublicKey: pubKeyBase64,
-	}
-	msg := proto.Message{
-		Type: proto.TypeRegister,
-		Data: regReq,
-	}
-
+	// 3. Envoyer REGISTER
+	regReq := proto.RegisterRequest{NodeID: *nodeIDFlag, PublicKey: pubKeyBase64}
+	msg := proto.Message{Type: proto.TypeRegister, Data: regReq}
 	if err := conn.WriteJSON(msg); err != nil {
-		log.Fatalf("Erreur lors de l'envoi du REGISTER: %v", err)
+		log.Fatalf("Erreur d'envoi REGISTER: %v", err)
 	}
-	log.Println("Message REGISTER envoyé. En attente de l'ACK...")
 
-	// 4. Attendre la réponse (ACK)
+	// 4. Attendre ACK
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var ack proto.Message
 	if err := conn.ReadJSON(&ack); err != nil {
-		log.Fatalf("Erreur lors de la lecture de l'ACK: %v", err)
+		log.Fatalf("Erreur de lecture ACK: %v", err)
 	}
-
-	if ack.Type == proto.TypeAck {
-		log.Printf("SUCCÈS: Réponse reçue du serveur: %v", ack.Data)
-	} else {
-		log.Printf("Réponse inattendue: %s", ack.Type)
-	}
-
-	// 5. Désactiver la limite de temps pour garder la connexion ouverte
 	conn.SetReadDeadline(time.Time{})
 
+	log.Printf("Enregistré avec succès. NodeID: %s", localNodeID[:8])
+
+	// 5. Envoyer la demande de connexion si spécifiée
+	if *connectTo != "" {
+		log.Printf("Envoi de la demande de connexion vers %s...", *connectTo)
+		req := proto.Message{Type: proto.TypeConnectRequest, Data: proto.ConnectRequest{
+			TargetNodeID: *connectTo,
+		}}
+		conn.WriteJSON(req)
+	}
+
 	fmt.Println("--------------------------------------------------")
-	fmt.Println("  Statut : Connecté au Coordinateur (en attente...)")
+	fmt.Println("  Statut : Connecté (en attente...)")
 	fmt.Println("--------------------------------------------------")
 
-	// 6. Boucle de lecture (garder la connexion active)
+	// 6. Boucle de lecture
 	for {
 		var incoming proto.Message
 		if err := conn.ReadJSON(&incoming); err != nil {
 			log.Printf("Déconnexion du serveur: %v", err)
 			break
 		}
-		log.Printf("Message reçu: %s", incoming.Type)
+
+		switch incoming.Type {
+		case proto.TypeConnectOffer:
+			log.Println("--- DEMANDE DE CONNEXION ENTRANTE ---")
+			dataMap := incoming.Data.(map[string]interface{})
+			initiatorID := dataMap["initiator_node_id"].(string)
+			log.Printf("Le nœud %s veut se connecter.", initiatorID)
+
+			if *acceptConnections {
+				accept := proto.Message{Type: proto.TypeConnectAccept, Data: proto.ConnectResponse{
+					TargetNodeID: initiatorID,
+					Accepted:     true,
+					Message:      "Connexion acceptée",
+				}}
+				conn.WriteJSON(accept)
+				log.Println("Connexion acceptée.")
+			} else {
+				reject := proto.Message{Type: proto.TypeConnectReject, Data: proto.ConnectResponse{
+					TargetNodeID: initiatorID,
+					Accepted:     false,
+					Message:      "Refusée par l'utilisateur",
+				}}
+				conn.WriteJSON(reject)
+				log.Println("Connexion refusée.")
+			}
+
+		case proto.TypeConnectAccept:
+			log.Println("--- CONNEXION ACCEPTÉE PAR LE PAIR ---")
+
+		case proto.TypeConnectReject:
+			log.Println("--- CONNEXION REFUSÉE ---")
+			dataMap := incoming.Data.(map[string]interface{})
+			log.Printf("Raison: %v", dataMap["message"])
+		}
 	}
 }

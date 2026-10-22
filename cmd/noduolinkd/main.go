@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"flag"
 	"log"
 	"net/http"
@@ -35,12 +36,10 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
-
 	http.HandleFunc("/ws", handleWebSocket)
 
 	port := ":8080"
-	log.Printf("Coordinateur en écoute sur http://localhost%s (WebSocket: /ws)", port)
-
+	log.Printf("Coordinateur en écoute sur http://localhost%s", port)
 	if err := http.ListenAndServe(port, nil); err != nil {
 		log.Fatalf("Erreur du serveur HTTP: %v", err)
 	}
@@ -57,7 +56,6 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.Println("Nouvelle connexion WebSocket entrante.")
 	var currentClient *coordination.Client
 
-	// Boucle de lecture des messages
 	for {
 		var msg proto.Message
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -68,19 +66,20 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		switch msg.Type {
 		case proto.TypeRegister:
 			log.Println("Message de type REGISTER reçu.")
-
-			// On extrait les données (qui sont sous forme de map car Data est une interface)
 			dataMap, ok := msg.Data.(map[string]interface{})
 			if !ok {
-				log.Println("Erreur: données de REGISTER invalides")
 				continue
 			}
 			pubKey, _ := dataMap["public_key"].(string)
 
-			// SÉCURITÉ : On calcule le NodeID à partir de la clé publique, on ignore ce que le client prétend être
-			nodeID := coordination.GenerateNodeID(pubKey)
+			// Validation stricte de la clé publique
+			decodedKey, err := base64.StdEncoding.DecodeString(pubKey)
+			if err != nil || len(decodedKey) != 32 {
+				log.Println("Erreur: clé publique invalide ou mal formée")
+				continue
+			}
 
-			// Créer et enregistrer le client
+			nodeID := coordination.GenerateNodeID(pubKey)
 			currentClient = &coordination.Client{
 				NodeID:    nodeID,
 				PublicKey: pubKey,
@@ -89,19 +88,54 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			registry.Register(currentClient)
 			log.Printf("Client enregistré: %s (Total connectés: %d)", nodeID[:8], registry.Count())
 
-			// On renvoie un ACK au client
 			ack := proto.Message{Type: proto.TypeAck, Data: "Bienvenue sur NoduoLink"}
-			if err := conn.WriteJSON(ack); err != nil {
-				log.Printf("Erreur d'envoi de l'ACK: %v", err)
+			conn.WriteJSON(ack)
+
+		case proto.TypeConnectRequest:
+			dataMap, ok := msg.Data.(map[string]interface{})
+			if !ok {
+				continue
 			}
-		default:
-			log.Printf("Type de message inconnu: %s", msg.Type)
+			targetNodeID, _ := dataMap["target_node_id"].(string)
+
+			targetClient, exists := registry.Get(targetNodeID)
+			if !exists {
+				errMsg := proto.Message{Type: proto.TypeConnectReject, Data: proto.ConnectResponse{
+					TargetNodeID: targetNodeID,
+					Accepted:     false,
+					Message:      "Nœud cible introuvable ou hors ligne",
+				}}
+				conn.WriteJSON(errMsg)
+				continue
+			}
+
+			offer := proto.Message{Type: proto.TypeConnectOffer, Data: proto.ConnectOffer{
+				InitiatorNodeID: currentClient.NodeID,
+				InitiatorPubKey: currentClient.PublicKey,
+			}}
+			if err := targetClient.Conn.WriteJSON(offer); err != nil {
+				log.Printf("Erreur d'envoi de l'offre: %v", err)
+			} else {
+				log.Printf("Offre transférée de %s vers %s", currentClient.NodeID[:8], targetNodeID[:8])
+			}
+
+		case proto.TypeConnectAccept, proto.TypeConnectReject:
+			dataMap, ok := msg.Data.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			targetNodeID, _ := dataMap["target_node_id"].(string)
+
+			initiatorClient, exists := registry.Get(targetNodeID)
+			if exists {
+				initiatorClient.Conn.WriteJSON(msg)
+				log.Printf("Réponse (%s) transférée de %s vers %s", msg.Type, currentClient.NodeID[:8], targetNodeID[:8])
+			}
 		}
 	}
 
-	// Nettoyage à la déconnexion
 	if currentClient != nil {
 		registry.Unregister(currentClient.NodeID, conn)
-		log.Printf("Client déconnecté: %s (Total connectés: %d)", currentClient.NodeID[:8], registry.Count())
+		log.Printf("Client déconnecté: %s (Total: %d)", currentClient.NodeID[:8], registry.Count())
 	}
 }

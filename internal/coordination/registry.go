@@ -66,3 +66,19 @@ func (r *Registry) Count() int {
 	defer r.mu.RUnlock()
 	return len(r.clients)
 }
+
+// Get retourne un client par son NodeID.
+func (r *Registry) Get(nodeID string) (*Client, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	client, exists := r.clients[nodeID]
+	return client, exists
+}
+
+// Get retourne un client par son NodeID.
+func (r *Registry) Get(nodeID string) (*Client, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	client, exists := r.clients[nodeID]
+	return client, exists
+}
