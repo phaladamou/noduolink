@@ -16,9 +16,10 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Chemin vers le fichier de configuration")
+	nodeID := flag.String("id", "device-test-01", "ID de l'appareil (pour simuler plusieurs machines)")
 	flag.Parse()
 
-	log.SetPrefix("[noduolink] ")
+	log.SetPrefix(fmt.Sprintf("[noduolink-%s] ", *nodeID))
 	log.Println("Démarrage du Client NoduoLink...")
 
 	cfg, err := config.Load(*configPath)
@@ -41,19 +42,16 @@ func main() {
 		}
 	} else {
 		log.Printf("Identité chargée depuis: %s", keyPath)
-		// Note: Pour l'instant, on ne relit pas les clés sur le disque, on en génère une nouvelle pour le test
-		// On corrigera ça dans la prochaine étape.
-		kp, _ = identity.GenerateKeyPair()
+		kp, _ = identity.GenerateKeyPair() // Note: on régénère pour l'instant
 	}
 
 	pubKeyBase64 := base64.StdEncoding.EncodeToString(kp.PublicKey)
 
 	fmt.Println("--------------------------------------------------")
-	fmt.Println("  NoduoLink Client - Your network. Everywhere.")
+	fmt.Printf("  NoduoLink Client - %s\n", *nodeID)
 	fmt.Println("--------------------------------------------------")
 
-	// 2. Connexion au Coordinateur (WebSocket)
-	// On utilise ws:// pour le test local, même si la config dit wss://
+	// 2. Connexion au Coordinateur
 	serverURL := "ws://localhost:8080/ws"
 	log.Printf("Tentative de connexion au coordinateur sur %s...", serverURL)
 
@@ -66,7 +64,7 @@ func main() {
 
 	// 3. Envoyer le message REGISTER
 	regReq := proto.RegisterRequest{
-		NodeID:    "device-test-01",
+		NodeID:    *nodeID,
 		PublicKey: pubKeyBase64,
 	}
 	msg := proto.Message{
@@ -92,7 +90,20 @@ func main() {
 		log.Printf("Réponse inattendue: %s", ack.Type)
 	}
 
+	// 5. Désactiver la limite de temps pour garder la connexion ouverte
+	conn.SetReadDeadline(time.Time{})
+
 	fmt.Println("--------------------------------------------------")
-	fmt.Println("  Statut : Connecté au Coordinateur")
+	fmt.Println("  Statut : Connecté au Coordinateur (en attente...)")
 	fmt.Println("--------------------------------------------------")
+
+	// 6. Boucle de lecture (garder la connexion active)
+	for {
+		var incoming proto.Message
+		if err := conn.ReadJSON(&incoming); err != nil {
+			log.Printf("Déconnexion du serveur: %v", err)
+			break
+		}
+		log.Printf("Message reçu: %s", incoming.Type)
+	}
 }
