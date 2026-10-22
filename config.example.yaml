@@ -1,12 +1,9 @@
 # NoduoLink - Configuration d'exemple
-
-# Niveau de log : debug, info, warn, error
 log_level: info
 
-# Le serveur central qui coordonne les connexions
 coordinator:
+  # Doit être wss:// ou https://
   url: "wss://coordinator.noduolink.dev"
 
-# Les chemins vers tes clés privées (générées lors de l'enrôlement)
 identity:
   private_key_path: "/etc/noduolink/keys/private.key"
