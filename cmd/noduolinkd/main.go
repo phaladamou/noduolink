@@ -3,33 +3,77 @@ package main
 import (
 	"flag"
 	"log"
-	"os"
+	"net/http"
 
+	"github.com/gorilla/websocket"
+	"github.com/phaladamou/noduolink/api/proto"
 	"github.com/phaladamou/noduolink/internal/config"
 )
 
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true // Autoriser toutes les origines pour le développement initial
+	},
+}
+
 func main() {
-	// Définir le flag pour le fichier de configuration
 	configPath := flag.String("config", "config.yaml", "Chemin vers le fichier de configuration")
 	flag.Parse()
 
 	log.SetPrefix("[noduolinkd] ")
 	log.Println("Démarrage du Coordinateur NoduoLink...")
 
-	// 1. Charger la configuration
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("Erreur critique de configuration: %v", err)
 	}
-	log.Printf("Configuration chargée avec succès (LogLevel: %s)", cfg.LogLevel)
+	log.Printf("Configuration chargée (LogLevel: %s)", cfg.LogLevel)
 
-	// 2. Vérifier l'URL du coordinateur (pour s'assurer que le serveur sait où il écoute)
-	log.Printf("Le serveur est configuré pour écouter sur: %s", cfg.Coordinator.URL)
+	// Route HTTP de base pour vérifier que le serveur tourne
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
 
-	// 3. Simuler le démarrage du serveur (on le fera à l'étape suivante)
-	log.Println("Coordinateur initialisé. En attente de connexions (simulation)...")
+	// Route WebSocket pour les agents
+	http.HandleFunc("/ws", handleWebSocket)
 
-	// Pour l'instant, on quitte proprement
-	log.Println("Arrêt du Coordinateur.")
-	os.Exit(0)
+	port := ":8080"
+	log.Printf("Coordinateur en écoute sur http://localhost%s (WebSocket: /ws)", port)
+
+	if err := http.ListenAndServe(port, nil); err != nil {
+		log.Fatalf("Erreur du serveur HTTP: %v", err)
+	}
+}
+
+func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Erreur d'upgrade WebSocket: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	log.Println("Nouvelle connexion WebSocket entrante.")
+
+	// Boucle de lecture des messages
+	for {
+		var msg proto.Message
+		if err := conn.ReadJSON(&msg); err != nil {
+			log.Printf("Déconnexion ou erreur de lecture: %v", err)
+			break
+		}
+
+		switch msg.Type {
+		case proto.TypeRegister:
+			log.Println("Message de type REGISTER reçu.")
+			// On renvoie un ACK au client
+			ack := proto.Message{Type: proto.TypeAck, Data: "Bienvenue sur NoduoLink"}
+			if err := conn.WriteJSON(ack); err != nil {
+				log.Printf("Erreur d'envoi de l'ACK: %v", err)
+			}
+		default:
+			log.Printf("Type de message inconnu: %s", msg.Type)
+		}
+	}
 }
