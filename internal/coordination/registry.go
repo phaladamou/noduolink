@@ -10,15 +10,15 @@ import (
 
 // Client représente un appareil connecté au coordinateur.
 type Client struct {
-	NodeID    string          // ID calculé à partir de la clé publique
-	PublicKey string          // Clé publique en base64
-	Conn      *websocket.Conn // La connexion WebSocket
+	NodeID    string
+	PublicKey string
+	Conn      *websocket.Conn
 }
 
 // Registry gère la liste des clients connectés de manière thread-safe.
 type Registry struct {
 	mu      sync.RWMutex
-	clients map[string]*Client // La clé de la map est le NodeID
+	clients map[string]*Client
 }
 
 // NewRegistry initialise un nouveau registre.
@@ -41,12 +41,10 @@ func (r *Registry) Register(client *Client) {
 
 	// Si un ancien client avec le même ID existe, on le ferme proprement
 	if oldClient, exists := r.clients[client.NodeID]; exists {
-		// Sécurité : on vérifie que la connexion n'est pas nil (utile pour les tests)
 		if oldClient.Conn != nil {
 			oldClient.Conn.Close()
 		}
 	}
-
 	r.clients[client.NodeID] = client
 }
 
@@ -65,14 +63,6 @@ func (r *Registry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.clients)
-}
-
-// Get retourne un client par son NodeID.
-func (r *Registry) Get(nodeID string) (*Client, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	client, exists := r.clients[nodeID]
-	return client, exists
 }
 
 // Get retourne un client par son NodeID.
