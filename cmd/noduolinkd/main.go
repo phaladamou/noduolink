@@ -98,7 +98,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			targetNodeID, _ := dataMap["target_node_id"].(string)
 
-			targetClient, exists := registry.Get(targetNodeID)
+			targetClient, exists := registry.GetByPrefix(targetNodeID)
 			if !exists {
 				errMsg := proto.Message{Type: proto.TypeConnectReject, Data: proto.ConnectResponse{
 					TargetNodeID: targetNodeID,
@@ -126,7 +126,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			targetNodeID, _ := dataMap["target_node_id"].(string)
 
-			initiatorClient, exists := registry.Get(targetNodeID)
+			initiatorClient, exists := registry.GetByPrefix(targetNodeID)
 			if exists {
 				initiatorClient.Conn.WriteJSON(msg)
 				log.Printf("Réponse (%s) transférée de %s vers %s", msg.Type, currentClient.NodeID[:8], targetNodeID[:8])

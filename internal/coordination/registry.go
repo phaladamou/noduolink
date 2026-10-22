@@ -72,3 +72,16 @@ func (r *Registry) Get(nodeID string) (*Client, bool) {
 	client, exists := r.clients[nodeID]
 	return client, exists
 }
+
+// GetByPrefix cherche un client dont le NodeID commence par le préfixe donné.
+// Utile pour l'expérience utilisateur (on n'a pas toujours 64 caractères à copier).
+func (r *Registry) GetByPrefix(prefix string) (*Client, bool) {
+r.mu.RLock()
+defer r.mu.RUnlock()
+for id, client := range r.clients {
+if len(prefix) <= len(id) && id[:len(prefix)] == prefix {
+return client, true
+}
+}
+return nil, false
+}
