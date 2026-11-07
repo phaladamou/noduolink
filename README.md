@@ -32,6 +32,40 @@ The initial architecture is planned around:
 
 These are initial design choices and may evolve as the project develops.
 
+## Architecture
+
+Two binaries plus shared packages:
+
+- `cmd/noduolinkd` — coordinator: WebSocket signaling server (`/ws`), client registry, relays connection offers between nodes.
+- `cmd/noduolink` — client: manages local X25519 identity, registers with the coordinator, handles incoming/outgoing connection requests, configures the local WireGuard interface.
+- `internal/identity` — Curve25519 keypair generation and local storage (`PRIVATE_KEY` / `PUBLIC_KEY`, `0600`); `NodeID = sha256(public_key)`.
+- `internal/coordination` — thread-safe registry of connected clients.
+- `internal/tunnel` — WireGuard setup via `wgctrl` (interface config, peer, allowed IPs, endpoint).
+- `internal/config` — strict YAML loader (unknown fields rejected, `wss://` or `https://` required).
+- `api/proto` — signaling envelope: `register`, `ack`, `connect_request`, `connect_offer`, `connect_accept`, `connect_reject`.
+
+### How it works
+
+1. Each client generates (or loads) its identity and computes its `NodeID`.
+2. Clients connect to the coordinator over WebSocket and send `register` with their public key.
+3. Client A sends `connect_request` with B's NodeID (full ID or prefix).
+4. The coordinator forwards a `connect_offer` to B; B replies `connect_accept` or `connect_reject`, relayed back to A.
+5. On accept, both sides configure their local WireGuard interface (`wg0`) with the peer's key and allowed IPs.
+
+```text
+Client A                  Coordinator                  Client B
+   |--- register ----------->|                             |
+   |<-- ack -----------------|--- register <---------------|
+   |                         |-- ack --------------------->|
+   |--- connect_request ---->|                             |
+   |                         |--- connect_offer ---------->|
+   |                         |<-- connect_accept ----------|
+   |<-- connect_accept ------|                             |
+   |================ WireGuard tunnel (wg0) ===============|
+```
+
+The coordinator only handles signaling; encrypted traffic flows directly between peers over WireGuard.
+
 ## Project Status
 
 NoduoLink is in its initial design and development phase. The architecture, security model, and first working prototype are being developed.
